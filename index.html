@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Myanmar Text-to-Image Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Padauk', sans-serif;
+        }
+        .loader {
+            border: 8px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 8px solid #3b82f6;
+            width: 60px;
+            height: 60px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen">
+
+    <div class="container mx-auto p-4 max-w-2xl">
+        <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700">
+            <h1 class="text-3xl font-bold text-center mb-2 text-blue-400">ပုံရိပ်ဖန်တီးပေးသော စနစ်</h1>
+            <p class="text-center text-gray-400 mb-6">သင်ဖန်တီးလိုသော ပုံ၏အကြောင်းအရာကို မြန်မာစာဖြင့် ထည့်သွင်းပါ။</p>
+
+            <div class="space-y-4">
+                <textarea id="prompt-input" rows="4" class="w-full p-4 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none" placeholder="ဥပမာ - ရွှေရောင်လယ်ကွင်းထဲတွင် ထိုင်နေသော ကြောင်တစ်ကောင်"></textarea>
+                <button id="generate-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800">
+                    ပုံဖန်တီးပါ
+                </button>
+            </div>
+
+            <div id="status-container" class="text-center mt-6">
+                 <div id="loader" class="hidden loader mx-auto"></div>
+                 <p id="error-message" class="text-red-400 mt-4 hidden"></p>
+            </div>
+           
+            <div id="image-container" class="mt-6 bg-gray-700 p-2 rounded-lg aspect-square flex items-center justify-center">
+                 <p id="placeholder-text" class="text-gray-500">ဤနေရာတွင် ဖန်တီးထားသောပုံ ပေါ်လာပါမည်။</p>
+            </div>
+        </div>
+        <footer class="text-center mt-6 text-gray-500 text-sm">
+            <p>Developer by MMITSG</p>
+        </footer>
+    </div>
+
+    <script>
+        const promptInput = document.getElementById('prompt-input');
+        const generateBtn = document.getElementById('generate-btn');
+        const imageContainer = document.getElementById('image-container');
+        const loader = document.getElementById('loader');
+        const errorMessage = document.getElementById('error-message');
+        const placeholderText = document.getElementById('placeholder-text');
+
+        const apiKey = ""; // API key is handled by the environment.
+
+        /**
+         * Retries a fetch request with exponential backoff.
+         * @param {function} fetchFn The function that returns a fetch Promise.
+         * @param {number} maxRetries Maximum number of retries.
+         * @param {number} delay Initial delay in ms.
+         * @returns {Promise<Response>}
+         */
+        async function fetchWithExponentialBackoff(fetchFn, maxRetries = 5, delay = 1000) {
+            let attempt = 0;
+            while (attempt < maxRetries) {
+                try {
+                    const response = await fetchFn();
+                    if (response.ok) {
+                        return response;
+                    }
+                    // Don't retry on client-side errors
+                    if (response.status >= 400 && response.status < 500) {
+                        console.error(`Client error: ${response.status} ${response.statusText}`);
+                        const errorData = await response.json();
+                        throw new Error(errorData.error?.message || `API request failed with status ${response.status}`);
+                    }
+                } catch (error) {
+                    if (attempt >= maxRetries - 1) throw error;
+                }
+                console.log(`Attempt ${attempt + 1} failed. Retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2; // Double the delay for the next attempt
+                attempt++;
+            }
+            throw new Error("API request failed after multiple retries.");
+        }
+
+        /**
+         * Translates Burmese text to English using the Gemini API.
+         * @param {string} text The Burmese text to translate.
+         * @returns {Promise<string>} The translated English text.
+         */
+        async function translateToEnglish(text) {
+            console.log("Translating to English...");
+            const translateApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text: `Translate the following Burmese text to English: "${text}"` }] }],
+            };
+            
+            const fetchFn = () => fetch(translateApiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const response = await fetchWithExponentialBackoff(fetchFn);
+            const result = await response.json();
+
+            const translatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!translatedText) {
+                throw new Error("Translation failed. Could not extract translated text.");
+            }
+            console.log("Translated prompt:", translatedText.trim());
+            return translatedText.trim();
+        }
+
+        /**
+         * Generates an image from a text prompt using the Imagen API.
+         * @param {string} prompt The English text prompt.
+         * @returns {Promise<string>} The base64 encoded image data.
+         */
+        async function generateImage(prompt) {
+            console.log("Generating image...");
+            const imageApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+            const payload = { 
+                instances: [{ prompt: prompt }],
+                parameters: { "sampleCount": 1 }
+            };
+
+            const fetchFn = () => fetch(imageApiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const response = await fetchWithExponentialBackoff(fetchFn);
+            const result = await response.json();
+            
+            const base64Data = result.predictions?.[0]?.bytesBase64Encoded;
+            if (!base64Data) {
+                throw new Error("Image generation failed. No image data received.");
+            }
+            console.log("Image generated successfully.");
+            return base64Data;
+        }
+
+
+        /**
+         * Main function to handle the image generation process.
+         */
+        async function handleGeneration() {
+            const userPrompt = promptInput.value.trim();
+            if (!userPrompt) {
+                showError("ကျေးဇူးပြု၍ စာသားထည့်သွင်းပါ။");
+                return;
+            }
+
+            // Reset UI
+            generateBtn.disabled = true;
+            generateBtn.textContent = 'လုပ်ဆောင်နေသည်...';
+            loader.classList.remove('hidden');
+            errorMessage.classList.add('hidden');
+            imageContainer.innerHTML = '';
+            placeholderText.classList.add('hidden');
+
+            try {
+                // Step 1: Translate the prompt
+                const translatedPrompt = await translateToEnglish(userPrompt);
+
+                // Step 2: Generate the image
+                const base64ImageData = await generateImage(translatedPrompt);
+                
+                // Step 3: Display the image
+                const img = document.createElement('img');
+                img.src = `data:image/png;base64,${base64ImageData}`;
+                img.alt = userPrompt;
+                img.className = "w-full h-full object-contain rounded-lg";
+                imageContainer.appendChild(img);
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError("ပုံဖန်တီးရာတွင် အမှားအယွင်း ဖြစ်ပေါ်နေပါသည်။ နောက်တစ်ကြိမ် ထပ်ကြိုးစားကြည့်ပါ။");
+            } finally {
+                // Restore UI
+                loader.classList.add('hidden');
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'ပုံဖန်တီးပါ';
+                if (imageContainer.innerHTML === '') {
+                    // Show placeholder again if something went wrong
+                     imageContainer.appendChild(placeholderText);
+                     placeholderText.classList.remove('hidden');
+                }
+            }
+        }
+        
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        }
+
+        generateBtn.addEventListener('click', handleGeneration);
+    </script>
+
+</body>
+</html>
+
